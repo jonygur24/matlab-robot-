@@ -1,0 +1,238 @@
+function [go, mem] = robostrategy_yoni(env, mem)
+
+    myPos = env.info.myPos;
+    opPos = env.info.opPos;
+    myFuel = env.info.fuel;
+    opFuel = env.info.fuel_op;
+    fuelDiff = myFuel - opFuel;
+    opDistance = sqrt((myPos(1) - opPos(1))^2 + (myPos(2) - opPos(2))^2);
+    minePos = env.mines.mPos;
+    fuelPos = env.fuels.fPos; % [x y]
+    mineExist = env.mines.mExist; % logical 
+    fuelExist = env.fuels.fExist; % logical
+    radMF = env.basic.rMF; % 0.3
+    rad2Rbt = env.basic.rRbt; % 0.5
+    gomax = env.basic.lmax;
+    fuelPoints = env.fuels.fScr(1);
+    finalDistance = inf;
+    enddistnace = -1;
+    opminDistance = false;
+    nfPlace = sum(fuelExist);
+    obstacle = fuelDiff <= 0;
+    x2op = opPos(1) - myPos(1);
+    y2op = opPos(2) - myPos(2);
+    angle2op = atan2(y2op, x2op);
+    for i = 1:env.fuels.nFuel
+        if fuelExist(i)
+            f_dx = fuelPos(i, 1) - myPos(1);
+            f_dy = fuelPos(i, 2) - myPos(2);
+            ftemp = sqrt(f_dx^2 + f_dy^2);
+            if ftemp < finalDistance
+                opf_dx = fuelPos(i, 1) - opPos(1);
+                opf_dy = fuelPos(i, 2) - opPos(2);
+                op_Dist = sqrt(opf_dx^2 + opf_dy^2);
+                if op_Dist < ftemp && ~opminDistance
+                    opminDistance = true;
+                    continue;
+                end
+                finalDistance = ftemp;
+                enddistnace = i;
+            end
+        end
+    end
+    x = fuelPos(fuelExist,1);
+    y = fuelPos(fuelExist,2);
+    [populated, maxQuad] = bestplace(x,y);
+    myQuad = getQuadrant(myPos(1),myPos(2));
+    opQuad = getQuadrant(opPos(1),opPos(2));
+    goToQuad = false;
+    if (opQuad ~= maxQuad && populated > getQuadrantDensity(myQuad) + 2)
+            goToQuad = true;
+    end
+    if fuelDiff > 0 && opDistance < finalDistance
+        if fuelDiff >= 30 && opDistance <= gomax
+            go = gomax * [cos(angle2op), sin(angle2op)];
+            go = wallDetection(go);
+            return;
+        end
+        go = mineDetection(angle2op);
+        go = wallDetection(go);
+        return;
+    end
+
+    if enddistnace == -1 && myFuel <= opFuel
+       go = [0 0];
+       return;
+    end
+    if obstacle && opDistance <= 2*(gomax + rad2Rbt)
+        dx = opPos(1) - myPos(1);
+        dy = opPos(2) - myPos(2);
+        angle = atan2(dy, dx);
+        angle = angle + pi;
+        goodAngle = -1;
+        if opDistance > gomax + rad2Rbt
+            angleSize = pi;
+        else
+            angleSize = pi/2;
+        end
+        % find a fuel source in the opposite direction
+        for j = 1:env.fuels.nFuel
+            dist = inf;
+            if fuelExist(j)
+                temp_dx = fuelPos(j, 1) - myPos(1);
+                temp_dy = fuelPos(j, 2) - myPos(2);
+                tempDist = sqrt(temp_dx^2 + temp_dy^2);
+                if tempDist < dist
+                    tempAngle = atan2(temp_dy, temp_dx);
+                    dist = tempDist;
+                end
+                if abs(tempAngle) < angleSize
+                    goodAngle = tempAngle;
+                else
+                    goodAngle = angle;
+                end
+            end
+        end
+        go = mineDetection(goodAngle);
+        go = wallDetection(go);
+        return;
+    end
+
+     if goToQuad == true && finalDistance > gomax * 5 && myQuad ~= maxQuad
+            a = "in goToQuad";
+
+            if maxQuad == 1 || maxQuad == 3
+                f_dx = 2.5 - myPos(1);
+            else
+                f_dx = 7.5 - myPos(1);
+            end
+            if maxQuad == 1 || maxQuad == 2
+                f_dy = 2.5 - myPos(2);
+            else
+                f_dy = 7.5 - myPos(2);
+            end
+            f_angle = atan2(f_dy,f_dx);
+            go = mineDetection(f_angle);
+            go = wallDetection(go);
+            return;
+     end
+    if enddistnace ~= -1
+        f_dx = fuelPos(enddistnace, 1) - myPos(1);
+        f_dy = fuelPos(enddistnace, 2) - myPos(2);
+        f_angle = atan2(f_dy, f_dx);
+        go = mineDetection(f_angle);
+        go = wallDetection(go);
+    end
+
+    % Avoid the closest mine if it's within the danger zone          
+   function go = mineDetection(angle)
+    if any(mineExist)
+        m_Dist = inf;
+        m_DistIdx = -1;
+        % Find closest mine
+         for i = 1:env.mines.nMine
+            if mineExist(i)
+              m_dx = minePos(i, 1) - myPos(1);
+              m_dy = minePos(i, 2) - myPos(2);
+              m_tempDist = sqrt(m_dx^2 + m_dy^2);
+                if m_tempDist < m_Dist
+                   m_Dist = m_tempDist;
+                   m_DistIdx = i;
+                end
+             end
+         end
+     end
+         if m_DistIdx ~= -1 && m_Dist <= gomax + radMF
+            m_dx = minePos(m_DistIdx, 1) - myPos(1);
+            m_dy = minePos(m_DistIdx, 2) - myPos(2);
+            m_angle = atan2(m_dy, m_dx);
+            perp_angle_cw = (m_angle - pi/2);  % 90 degrees clockwise
+            perp_angle_ccw = (m_angle + pi/2); % 90 degrees counterclockwise
+            cw_diff = angle_diff(angle, perp_angle_cw);
+            ccw_diff = angle_diff(angle, perp_angle_ccw);
+            if cw_diff < ccw_diff
+                go = [gomax * cos(perp_angle_cw), gomax * sin(perp_angle_cw)];
+                go = wallDetection(go);
+                else
+                go = [gomax * cos(perp_angle_ccw), gomax * sin(perp_angle_ccw)];
+                go = wallDetection(go);
+            end
+                else
+                % go regularly if no nearby mines
+                go = [gomax * cos(angle), gomax * sin(angle)];
+                go = wallDetection(go);
+        end  
+    end
+
+    function go = wallDetection(go)
+        newPos= myPos + go;
+        if newPos(1)>=10
+            go(1)=10;
+        end
+        if newPos(1) <= 0
+            go(1)=0;
+        end
+        if newPos(2)>=10
+            go(2)=10;
+        end
+        if newPos(2) <= 0
+            go(2)=0;
+        end
+    end
+
+    function diff = angle_diff(angle1, angle2)
+        % Function to calculate the smallest angular difference between two angles
+        diff = abs(mod(angle1 - angle2 + pi, 2 * pi) - pi);
+    end
+
+    function quadrant = getQuadrant(x,y)
+        if ( x < 5 && y < 5)
+            quadrant = 1;
+            return;
+        end
+        if ( x > 5 && y < 5)
+            quadrant = 2 ;
+            return;
+        end
+        if ( x < 5 && y > 5)
+            quadrant = 3;
+            return;
+        end
+        if ( x > 5 && y > 5)
+            quadrant = 4;
+            return;
+        end
+    end
+
+    function [denseAmount, populated] = bestplace(x, y)
+    numInFirstQuadrant = sum((x > 0) & (x <= 5) & (y > 0) & (y <= 5));
+    numInSecondQuadrant = sum((x > 5) & (x <= 10) & (y > 0) & (y <= 5));
+    numInThirdQuadrant = sum((x > 0) & (x <= 5) & (y > 5) & (y <= 10));
+    numInFourthQuadrant = sum((x > 5) & (x <= 10) & (y > 5) & (y <= 10));
+    [denseAmount, idx] = max([numInFirstQuadrant, numInSecondQuadrant, numInThirdQuadrant, numInFourthQuadrant]);
+    denseAmount = denseAmount - min([numInFirstQuadrant, numInSecondQuadrant, numInThirdQuadrant, numInFourthQuadrant]);
+    populated = idx;
+    end
+
+        function density = getQuadrantDensity(quadrant)
+        x = fuelPos(fuelExist,1);
+        y = fuelPos(fuelExist,2);
+        if quadrant == 1
+            density = sum((x > 0) & (x <= 5) & (y > 0) & (y <= 5));
+            return;
+        end
+        if quadrant == 2
+            density = sum((x > 5) & (x <= 10) & (y > 0) & (y <= 5));
+            return;
+        end
+        if quadrant == 3
+            density = sum((x > 0) & (x <= 5) & (y > 5) & (y <= 10));
+            return;
+        end
+        if quadrant == 4
+            density = sum((x > 5) & (x <= 10) & (y > 5) & (y <= 10));
+            return;
+        end
+
+    end
+end
